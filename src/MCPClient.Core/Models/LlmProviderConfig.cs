@@ -6,7 +6,8 @@ public enum LlmProviderType
     AzureOpenAI,
     Anthropic,
     Ollama,
-    GitHubCopilot
+    GitHubCopilot,
+    ChatGPT
 }
 
 public class LlmProviderConfig
