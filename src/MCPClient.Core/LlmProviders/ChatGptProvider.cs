@@ -77,7 +77,8 @@ public class ChatGptProvider : ILlmProvider
         _config = config;
         if (!string.IsNullOrEmpty(config.ApiKey))
         {
-            _accessToken = config.ApiKey;
+            _accessToken  = config.ApiKey;
+            _refreshToken = config.RefreshToken;
             InitializeChatClient();
         }
     }
@@ -91,6 +92,12 @@ public class ChatGptProvider : ILlmProvider
     /// </summary>
     public async Task AuthenticateWithBrowserAsync(CancellationToken cancellationToken = default)
     {
+        if (ClientId == "YOUR_OPENAI_OAUTH_CLIENT_ID" || string.IsNullOrEmpty(ClientId))
+            throw new InvalidOperationException(
+                "A valid OAuth client_id has not been configured for the ChatGPT provider. " +
+                "Register an OAuth application at https://platform.openai.com/apps, set the " +
+                "redirect URI to http://127.0.0.1/callback, and replace the ClientId constant " +
+                "in ChatGptProvider.cs with your registered client_id.");
         var port = FindFreePort();
         var redirectUri = $"http://127.0.0.1:{port}/callback";
 
@@ -162,11 +169,18 @@ public class ChatGptProvider : ILlmProvider
                     var stream = tcpClient.GetStream();
                     var buffer = new byte[8192];
                     int bytesRead = await stream.ReadAsync(buffer, cts.Token);
+
+                    // Skip empty or malformed requests (e.g. browser pre-connect probes).
+                    if (bytesRead == 0) continue;
+
                     var requestText = Encoding.UTF8.GetString(buffer, 0, bytesRead);
 
                     // Parse the first line: GET /callback?code=...&state=... HTTP/1.1
-                    var requestLine = requestText.Split('\n')[0].Trim();
-                    var pathPart = requestLine.Split(' ').ElementAtOrDefault(1) ?? string.Empty;
+                    var firstLine = requestText.Split('\n', 2)[0].Trim();
+                    var parts = firstLine.Split(' ');
+                    if (parts.Length < 2) continue;   // not a valid HTTP request line
+
+                    var pathPart = parts[1];
                     var queryString = pathPart.Contains('?')
                         ? pathPart[(pathPart.IndexOf('?') + 1)..]
                         : string.Empty;
@@ -239,12 +253,61 @@ public class ChatGptProvider : ILlmProvider
         if (root.TryGetProperty("expires_in", out var exp))
             _tokenExpiry = DateTime.UtcNow.AddSeconds(exp.GetInt32());
 
-        // Persist the token so it can be reloaded on next launch.
+        // Persist both tokens so they can be reloaded on next launch.
         if (_config != null)
-            _config.ApiKey = _accessToken;
+        {
+            _config.ApiKey       = _accessToken;
+            _config.RefreshToken = _refreshToken;
+        }
 
         InitializeChatClient();
         AuthenticationCompleted?.Invoke();
+    }
+
+    /// <summary>
+    /// Uses the stored refresh_token to obtain a new access_token silently.
+    /// </summary>
+    private async Task RefreshAccessTokenAsync(CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrEmpty(_refreshToken))
+            throw new InvalidOperationException("No refresh token is available. Please sign in again.");
+
+        using var httpClient = new System.Net.Http.HttpClient();
+        var body = new Dictionary<string, string>
+        {
+            ["grant_type"]    = "refresh_token",
+            ["client_id"]     = ClientId,
+            ["refresh_token"] = _refreshToken,
+        };
+
+        var response = await httpClient.PostAsync(
+            TokenEndpoint,
+            new System.Net.Http.FormUrlEncodedContent(body),
+            cancellationToken);
+
+        var json = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (!response.IsSuccessStatusCode)
+            throw new InvalidOperationException($"Token refresh failed ({response.StatusCode}): {json}");
+
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+
+        _accessToken = root.GetProperty("access_token").GetString()
+            ?? throw new InvalidOperationException("Refresh response contained no access_token.");
+
+        if (root.TryGetProperty("refresh_token", out var rt))
+            _refreshToken = rt.GetString();
+
+        if (root.TryGetProperty("expires_in", out var exp))
+            _tokenExpiry = DateTime.UtcNow.AddSeconds(exp.GetInt32());
+
+        if (_config != null)
+        {
+            _config.ApiKey       = _accessToken;
+            _config.RefreshToken = _refreshToken;
+        }
+
+        InitializeChatClient();
     }
 
     private void InitializeChatClient()
@@ -263,6 +326,10 @@ public class ChatGptProvider : ILlmProvider
         IEnumerable<ToolDefinition>? tools = null,
         CancellationToken cancellationToken = default)
     {
+        // Silently refresh the access token when it is close to expiry.
+        if (_tokenExpiry != DateTime.MinValue && DateTime.UtcNow >= _tokenExpiry.AddMinutes(-2))
+            await RefreshAccessTokenAsync(cancellationToken);
+
         if (_client == null)
             throw new InvalidOperationException(
                 "ChatGPT provider is not configured. Please sign in first.");

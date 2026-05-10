@@ -162,7 +162,7 @@ public sealed partial class SettingsPage : Page
         ChatGptSignInButton.IsEnabled = false;
         ChatGptStatusText.Visibility  = Visibility.Collapsed;
 
-        provider.AuthenticationCompleted += async () =>
+        provider.AuthenticationCompleted += () =>
         {
             DispatcherQueue.TryEnqueue(async () =>
             {
@@ -181,8 +181,9 @@ public sealed partial class SettingsPage : Page
                     };
                 }
 
-                config.LlmProviders["chatgpt"].ApiKey = tempConfig.ApiKey;
-                config.LlmProviders["chatgpt"].Model  = selectedModel;
+                config.LlmProviders["chatgpt"].ApiKey       = tempConfig.ApiKey;
+                config.LlmProviders["chatgpt"].Model        = selectedModel;
+                config.LlmProviders["chatgpt"].RefreshToken = tempConfig.RefreshToken;
                 config.DefaultProviderId = "chatgpt";
 
                 await _configService.SaveConfigAsync(config);
