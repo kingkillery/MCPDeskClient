@@ -36,6 +36,7 @@ public class ChatGptProvider : ILlmProvider
     private const string TokenEndpoint = "https://auth.openai.com/oauth/token";
     private const string Scopes = "openid email profile";
     private const string OpenAiApiBase = "https://api.openai.com/v1";
+    private const int TokenRefreshBufferMinutes = 2;
 
     // ── State ──────────────────────────────────────────────────────────────────
     private ChatClient? _client;
@@ -327,7 +328,7 @@ public class ChatGptProvider : ILlmProvider
         CancellationToken cancellationToken = default)
     {
         // Silently refresh the access token when it is close to expiry.
-        if (_tokenExpiry != DateTime.MinValue && DateTime.UtcNow >= _tokenExpiry.AddMinutes(-2))
+        if (_tokenExpiry != DateTime.MinValue && DateTime.UtcNow >= _tokenExpiry.AddMinutes(-TokenRefreshBufferMinutes))
             await RefreshAccessTokenAsync(cancellationToken);
 
         if (_client == null)
