@@ -69,6 +69,30 @@ public sealed partial class SettingsPage : Page
             {
                 UpdateGitHubStatus(false);
             }
+            
+            // Load ChatGPT state
+            var chatGptProviderCfg = config.LlmProviders.Values.FirstOrDefault(p => p.Type == LlmProviderType.ChatGPT);
+            if (chatGptProviderCfg != null)
+            {
+                var modelText = chatGptProviderCfg.Model;
+                bool found = false;
+                for (int i = 0; i < ChatGptModelComboBox.Items.Count; i++)
+                {
+                    if (ChatGptModelComboBox.Items[i] is ComboBoxItem item && item.Content?.ToString() == modelText)
+                    {
+                        ChatGptModelComboBox.SelectedIndex = i;
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) ChatGptModelComboBox.SelectedIndex = 0;
+
+                UpdateChatGptStatus(!string.IsNullOrEmpty(chatGptProviderCfg.ApiKey));
+            }
+            else
+            {
+                UpdateChatGptStatus(false);
+            }
         }
         catch (Exception)
         {
@@ -100,6 +124,106 @@ public sealed partial class SettingsPage : Page
             GitHubAuthStatus.Text = "Not connected";
             GitHubAuthStatus.Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Orange);
         }
+    }
+    
+    private void UpdateChatGptStatus(bool isAuthenticated)
+    {
+        if (isAuthenticated)
+        {
+            ChatGptAuthStatus.Text = "✓ Connected";
+            ChatGptAuthStatus.Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Green);
+            ChatGptSignInButton.Content = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 8,
+                Children =
+                {
+                    new FontIcon { Glyph = "\uE73E", FontSize = 16 },
+                    new TextBlock { Text = "Re-authenticate" }
+                }
+            };
+        }
+        else
+        {
+            ChatGptAuthStatus.Text = "Not connected";
+            ChatGptAuthStatus.Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Orange);
+        }
+    }
+    
+    private async void ChatGptSignIn_Click(object sender, RoutedEventArgs e)
+    {
+        _authCts?.Cancel();
+        _authCts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+
+        var tempConfig = new LlmProviderConfig { Type = LlmProviderType.ChatGPT };
+        var provider   = new MCPClient.Core.LlmProviders.ChatGptProvider();
+        provider.Configure(tempConfig);
+
+        ChatGptSignInButton.IsEnabled = false;
+        ChatGptStatusText.Visibility  = Visibility.Collapsed;
+
+        provider.AuthenticationCompleted += () =>
+        {
+            DispatcherQueue.TryEnqueue(async () =>
+            {
+                var selectedModel = (ChatGptModelComboBox.SelectedItem as ComboBoxItem)?.Content?.ToString()
+                                    ?? "gpt-4o";
+
+                var config = await _configService.LoadConfigAsync();
+                if (!config.LlmProviders.ContainsKey("chatgpt"))
+                {
+                    config.LlmProviders["chatgpt"] = new LlmProviderConfig
+                    {
+                        Id          = "chatgpt",
+                        DisplayName = "ChatGPT",
+                        Type        = LlmProviderType.ChatGPT,
+                        Enabled     = true
+                    };
+                }
+
+                config.LlmProviders["chatgpt"].ApiKey       = tempConfig.ApiKey;
+                config.LlmProviders["chatgpt"].Model        = selectedModel;
+                config.LlmProviders["chatgpt"].RefreshToken = tempConfig.RefreshToken;
+                config.DefaultProviderId = "chatgpt";
+
+                await _configService.SaveConfigAsync(config);
+                _llmService.ConfigureProviders(config);
+
+                ChatGptStatusText.Text       = "✓ Signed in successfully!";
+                ChatGptStatusText.Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Green);
+                ChatGptStatusText.Visibility = Visibility.Visible;
+                UpdateChatGptStatus(true);
+
+                await _viewModel.LoadSettingsAsync();
+                ChatGptSignInButton.IsEnabled = true;
+            });
+        };
+
+        try
+        {
+            // Opens the user's default browser for OpenAI login, then captures
+            // the loopback redirect containing the authorization code.
+            await provider.AuthenticateWithBrowserAsync(_authCts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            ChatGptStatusText.Text       = "Sign-in timed out or was cancelled.";
+            ChatGptStatusText.Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Orange);
+            ChatGptStatusText.Visibility = Visibility.Visible;
+            ChatGptSignInButton.IsEnabled = true;
+        }
+        catch (Exception ex)
+        {
+            ChatGptStatusText.Text       = $"Sign-in failed: {ex.Message}";
+            ChatGptStatusText.Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Red);
+            ChatGptStatusText.Visibility = Visibility.Visible;
+            ChatGptSignInButton.IsEnabled = true;
+        }
+    }
+    
+    private void ChatGptModelComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        // Model selection is persisted on Save Settings
     }
     
     private async void GitHubSignIn_Click(object sender, RoutedEventArgs e)
@@ -341,10 +465,19 @@ public sealed partial class SettingsPage : Page
         // Save other providers from ViewModel
         foreach (var provider in _viewModel.Providers)
         {
-            if (provider.Type != LlmProviderType.GitHubCopilot)
+            if (provider.Type != LlmProviderType.GitHubCopilot
+                && provider.Type != LlmProviderType.ChatGPT)
             {
                 config.LlmProviders[provider.Id] = provider;
             }
+        }
+        
+        // Save ChatGPT model selection if already authenticated
+        var chatGptSelectedModel = (ChatGptModelComboBox.SelectedItem as ComboBoxItem)?.Content?.ToString()
+                                   ?? "gpt-4o";
+        if (config.LlmProviders.ContainsKey("chatgpt"))
+        {
+            config.LlmProviders["chatgpt"].Model = chatGptSelectedModel;
         }
         
         await _configService.SaveConfigAsync(config);

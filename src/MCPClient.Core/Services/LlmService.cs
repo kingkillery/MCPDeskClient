@@ -34,6 +34,7 @@ public class LlmService : ILlmService
         _providers["anthropic"] = new AnthropicProvider();
         _providers["ollama"] = new OllamaProvider();
         _providers["github-copilot"] = new GitHubCopilotProvider();
+        _providers["chatgpt"] = new ChatGptProvider();
     }
     
     public void SetCurrentProvider(string providerId)
@@ -60,6 +61,7 @@ public class LlmService : ILlmService
                     LlmProviderType.Ollama => new OllamaProvider(),
                     LlmProviderType.AzureOpenAI => new OpenAiProvider(),
                     LlmProviderType.GitHubCopilot => new GitHubCopilotProvider(),
+                    LlmProviderType.ChatGPT => new ChatGptProvider(),
                     _ => throw new NotSupportedException($"Provider type {providerConfig.Type} is not supported")
                 };
                 _providers[id] = provider;
